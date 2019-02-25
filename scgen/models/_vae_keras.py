@@ -7,10 +7,11 @@ import tensorflow as tf
 from keras import backend as K, Model
 from keras.callbacks import EarlyStopping, CSVLogger
 from keras.layers import Input, Dense, BatchNormalization, LeakyReLU, Dropout, Lambda
+from keras.models import load_model
 from scipy import sparse
 
 from .util import balancer, extractor, shuffle_data
-from keras.models import load_model
+
 log = logging.getLogger(__file__)
 
 
@@ -161,7 +162,6 @@ class VAEArithKeras:
         self.encoder_model = Model(inputs=self.x, outputs=[self.mu, self.log_var, self.z], name='encoder')
         self.x_hat = self._decoder()
         self.vae_model = Model(inputs=self.x, outputs=self.x_hat, name="VAE")
-        self.vae_model.summary()
 
     def _loss_function(self):
         """
@@ -178,10 +178,12 @@ class VAEArithKeras:
             -------
             Nothing will be returned.
         """
+
         def vae_loss(y_true, y_pred):
             kl_loss = 0.5 * K.sum(K.exp(self.log_var) + K.square(self.mu) - 1. - self.log_var, axis=1)
             recon_loss = 0.5 * K.sum(tf.square((y_true - y_pred)), axis=1)
             return K.mean(recon_loss + 0.001 * kl_loss)
+
         self.vae_optimizer = keras.optimizers.Adam(lr=self.learning_rate)
         self.vae_model.compile(optimizer=self.vae_optimizer, loss=vae_loss)
 
@@ -201,7 +203,7 @@ class VAEArithKeras:
             latent: numpy nd-array
                 Returns array containing latent space encoding of 'data'
         """
-        latent = self.encoder_model.predict(x=data)[0]
+        latent = self.encoder_model.predict(x=data)
         return latent
 
     def _avg_vector(self, data):
@@ -247,7 +249,7 @@ class VAEArithKeras:
         # else:
         #     latent = self.to_latent(data)
         # rec_data = self.sess.run(self.x_hat, feed_dict={self.z_mean: latent, self.is_training: False})
-        rec_data = self.vae_model.predict(x=data)
+        rec_data = self.decoder_model.predict(x=data)
         return rec_data
 
     def linear_interpolation(self, source_adata, dest_adata, n_steps):
@@ -396,8 +398,22 @@ class VAEArithKeras:
         """
         self.vae_model = load_model(os.path.join(self.model_to_use, 'vae.h5'), compile=False)
         self.encoder_model = Model(inputs=self.vae_model.inputs, outputs=self.vae_model.get_layer('Z').output)
-        self.encoder_model.summary()
-        # self.encoder_model = load_model(os.path.join(self.model_to_use, 'encoder.h5'))
+
+        decoder_input = Input(shape=(self.z_dim,))
+        h = Dense(800, kernel_initializer=self.init_w)(decoder_input)
+        h = BatchNormalization()(h)
+        h = LeakyReLU()(h)
+        h = Dropout(self.dropout_rate)(h)
+        h = Dense(800, kernel_initializer=self.init_w)(h)
+        h = BatchNormalization()(h)
+        h = LeakyReLU()(h)
+        h = Dropout(self.dropout_rate)(h)
+        h = Dense(self.x_dim, kernel_initializer=self.init_w)(h)
+        self.decoder_model = Model(decoder_input, h)
+        i = 11
+        for layer in self.decoder_model.layers:
+            layer.set_weights(self.vae_model.layers[i].get_weights())
+            i += 1
 
     def train(self, train_data, use_validation=False, valid_data=None, n_epochs=25, batch_size=32, early_stop_limit=20,
               threshold=0.0025, initial_run=True, shuffle=True):
